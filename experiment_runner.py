@@ -19,8 +19,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
@@ -29,6 +29,9 @@ from src.data_generator import generate_petal_dataset, run_dataset_adversarial_c
 from src.metrics import calibrate_id_estimators
 from src.models import get_model_suite
 from src.statistics import compute_analysis_hash
+
+if TYPE_CHECKING:
+    from src.result_writer import ResultWriter
 
 
 # ─── Pre-registered config ────────────────────────────────────────────────────
@@ -96,20 +99,40 @@ def run_phase_ensemble(
     fast_patience: int = 10,
     val_every: int = 5,
     use_amp: bool = True,
+    epsilons_override: list[float] | None = None,
+    writer: "ResultWriter | None" = None,
 ) -> None:
     """Ensemble trainer: batches all seeds per (epsilon, n_group, N, model_type) cell."""
     from src.ensemble_trainer import train_seeds_in_parallel
+    from src.result_writer import ResultWriter
+
+    if writer is None:
+        writer = ResultWriter(results_dir=str(results_dir),
+                              experiment_name=f"symmetry_exchange_phase{phase}")
+    writer.cleanup_temp_files()
 
     cfg = PREREGISTERED_CONFIG
     n_groups = [2, 4] if pilot else cfg["n_groups"]
     n_trains = [100, 400] if pilot else cfg["n_train_grid"]
     seeds    = [0, 1] if pilot else cfg["seeds"]
-    epsilons = [0.0] if phase == 1 else cfg["epsilon_values"]
+    if epsilons_override is not None:
+        epsilons = epsilons_override
+    else:
+        epsilons = [0.0] if phase == 1 else cfg["epsilon_values"]
     mtypes   = cfg["model_types"]
 
     n_cells = len(epsilons) * len(n_groups) * len(n_trains) * len(mtypes)
     cell_idx = 0
+    completed_cells = 0
+    failed_cells = 0
     import time as _time
+
+    writer.log_event("phase_started", phase=phase, n_cells_total=n_cells,
+                     trainer="ensemble", pilot=pilot,
+                     n_groups=n_groups, n_trains=n_trains,
+                     seeds=seeds, epsilons=epsilons)
+
+    phase_start = _time.perf_counter()
 
     for epsilon in epsilons:
         for n_group in n_groups:
@@ -127,17 +150,29 @@ def run_phase_ensemble(
                         trains[0], vals[0], n_petals=n_group, epsilon=epsilon, verbose=False,
                     )
                     if not checks["all_checks_passed"]:
-                        print(f"  ✗ Dataset checks FAILED for n={n_group}. Skipping.")
+                        msg = f"Dataset checks FAILED for n={n_group}. Skipping."
+                        print(f"  ✗ {msg}")
+                        writer.log_event("dataset_check_failed", n_group=n_group,
+                                         n_train=n_train, epsilon=epsilon, details=checks)
                         continue
 
                 for mtype in mtypes:
                     cell_idx += 1
+                    cell_key = f"n{n_group}_N{n_train}_eps{epsilon:.2f}_{mtype}"
                     marker = _done_marker_ens(results_dir, n_group, n_train, epsilon, mtype)
                     if marker.exists():
                         continue
 
                     lambda_l2 = cfg["lambda_l2_regularized"] if mtype == "regularized" else 0.0
                     factory = _model_factory(mtype, n_group, cfg["hidden_dim"], cfg["n_hidden"])
+
+                    writer.log_event("cell_started", cell=cell_key, cell_idx=cell_idx,
+                                     n_cells=n_cells, n_seeds=len(seeds))
+                    writer.heartbeat({
+                        "cell": cell_key, "cell_idx": cell_idx, "n_cells": n_cells,
+                        "completed": completed_cells, "failed": failed_cells,
+                        "phase": phase,
+                    })
 
                     t0 = _time.perf_counter()
                     try:
@@ -161,23 +196,37 @@ def run_phase_ensemble(
                             use_amp=use_amp,
                             config_hash=PREREGISTERED_HASH,
                             dataset_hashes=hashes,
+                            result_writer=writer,
+                            cell_key=cell_key,
+                            save_partial_on_error=True,
                         )
                     except Exception as e:
-                        print(f"  ✗ Cell n={n_group} N={n_train} {mtype} FAILED: {e}")
+                        failed_cells += 1
+                        print(f"  ✗ Cell {cell_key} FAILED: {e}")
+                        writer.log_event("cell_error", cell=cell_key, error=str(e),
+                                         error_type=type(e).__name__)
                         continue
                     cell_time = _time.perf_counter() - t0
 
-                    # Save per-seed results
+                    # Save per-seed results atomically — write each one before
+                    # touching the done marker
                     accs = []
+                    saved_run_ids = []
                     for r in results:
-                        rpath = results_dir / f"{r['run_id']}.json"
-                        with open(rpath, "w") as f:
-                            json.dump(r, f, indent=2)
+                        writer.save_run(r)
                         accs.append(r["best_val_acc"])
+                        saved_run_ids.append(r["run_id"])
+                    # Only mark cell done if all results saved successfully
                     marker.touch()
+                    completed_cells += 1
 
                     n_above = sum(a >= cfg["target_acc"] for a in accs)
-                    status = "✓" if n_above >= 3 else " "
+                    status = "✓" if n_above >= max(3, len(seeds) // 2) else " "
+
+                    writer.log_event("cell_complete", cell=cell_key,
+                                     wall_time_s=cell_time, best_val_accs=accs,
+                                     n_above_target=n_above, run_ids=saved_run_ids)
+
                     print(
                         f"  [{status}] [{cell_idx}/{n_cells}] eps={epsilon:.1f} "
                         f"n={n_group:2d} N={n_train:5d} {mtype:12s}  "
@@ -185,7 +234,12 @@ def run_phase_ensemble(
                         f"({cell_time:.1f}s)"
                     )
 
-    print(f"\nPhase {phase} (ensemble) complete.")
+    phase_wall = _time.perf_counter() - phase_start
+    writer.log_event("phase_complete", phase=phase,
+                     completed_cells=completed_cells, failed_cells=failed_cells,
+                     n_cells_total=n_cells, wall_time_s=phase_wall)
+    print(f"\nPhase {phase} (ensemble) complete: {completed_cells} cells, "
+          f"{failed_cells} failed, {phase_wall:.1f}s")
 
 
 def run_phase_sequential(
@@ -197,18 +251,33 @@ def run_phase_sequential(
     fast_patience: int = 10,
     val_every: int = 5,
     use_amp: bool = True,
+    epsilons_override: list[float] | None = None,
+    writer: "ResultWriter | None" = None,
 ) -> None:
     """Sequential trainer: one run per (cell, seed). Use trainer='fast' or 'original'."""
+    from src.result_writer import ResultWriter
+
     if trainer == "fast":
         from src.fast_trainer import train_one_run_fast as train_fn
     else:
         from src.trainer import train_one_run as train_fn
 
+    if writer is None:
+        writer = ResultWriter(results_dir=str(results_dir),
+                              experiment_name=f"symmetry_exchange_phase{phase}")
+    writer.cleanup_temp_files()
+
     cfg = PREREGISTERED_CONFIG
     n_groups = [2, 4] if pilot else cfg["n_groups"]
     n_trains = [100, 400] if pilot else cfg["n_train_grid"]
     seeds    = [0, 1] if pilot else cfg["seeds"]
-    epsilons = [0.0] if phase == 1 else cfg["epsilon_values"]
+    if epsilons_override is not None:
+        epsilons = epsilons_override
+    else:
+        epsilons = [0.0] if phase == 1 else cfg["epsilon_values"]
+
+    writer.log_event("phase_started", phase=phase, trainer=trainer, pilot=pilot,
+                     epsilons=epsilons, seeds=seeds)
 
     for epsilon in epsilons:
         for n_group in n_groups:
@@ -237,6 +306,7 @@ def run_phase_sequential(
                             continue
 
                         lambda_l2 = cfg["lambda_l2_regularized"] if mtype == "regularized" else 0.0
+                        cell_key = f"n{n_group}_N{n_train}_eps{epsilon:.2f}_s{seed}_{mtype}"
 
                         kwargs = dict(
                             model=model, model_type=mtype,
@@ -253,17 +323,29 @@ def run_phase_sequential(
                         )
                         if trainer == "fast":
                             kwargs.update(patience=fast_patience, val_every=val_every,
-                                          use_amp=use_amp)
+                                          use_amp=use_amp,
+                                          result_writer=writer, cell_key=cell_key)
                         else:
                             kwargs.update(patience=cfg["patience"],
                                           checkpoint_dir="results/checkpoints")
 
-                        result = train_fn(**kwargs)
+                        writer.log_event("cell_started", cell=cell_key)
 
-                        rpath = results_dir / f"{result['run_id']}.json"
-                        with open(rpath, "w") as f:
-                            json.dump(result, f, indent=2)
+                        try:
+                            result = train_fn(**kwargs)
+                        except Exception as e:
+                            writer.log_event("cell_error", cell=cell_key,
+                                             error=str(e), error_type=type(e).__name__)
+                            print(f"  ✗ {cell_key} FAILED: {e}")
+                            continue
+
+                        # Atomic save via writer (replaces direct file write)
+                        writer.save_run(result)
                         marker.touch()
+
+                        writer.log_event("cell_complete", cell=cell_key,
+                                         best_val_acc=result["best_val_acc"],
+                                         reached_target=result["reached_target"])
 
                         status = "✓" if result["reached_target"] else " "
                         print(
@@ -271,6 +353,7 @@ def run_phase_sequential(
                             f"seed={seed} {mtype:12s}  val={result['best_val_acc']:.3f}"
                         )
 
+    writer.log_event("phase_complete", phase=phase)
     print(f"\nPhase {phase} ({trainer}) complete.")
 
 
@@ -286,12 +369,29 @@ def run_phase(
     fast_patience: int = 10,
     val_every: int = 5,
     use_amp: bool = True,
+    epsilons_override: list[float] | None = None,
 ) -> None:
+    from src.result_writer import ResultWriter
+
     results_dir.mkdir(parents=True, exist_ok=True)
     Path("results/checkpoints").mkdir(parents=True, exist_ok=True)
 
     print(f"\n── Phase {phase} {'(pilot)' if pilot else ''}  trainer={trainer}  device={device} ──")
     print(f"Config hash: {PREREGISTERED_HASH[:16]}")
+    if epsilons_override is not None:
+        print(f"Epsilons (overridden): {epsilons_override}")
+
+    # One ResultWriter for the whole phase; passed down to sub-runners.
+    # Cleans up orphaned .tmp files from previous crashed runs at startup.
+    writer = ResultWriter(
+        results_dir=str(results_dir),
+        experiment_name=f"symmetry_exchange_phase{phase}",
+    )
+    n_cleaned = writer.cleanup_temp_files()
+    if n_cleaned:
+        print(f"  Cleaned up {n_cleaned} orphaned .tmp file(s) from prior runs")
+    print(f"  Progress log: {writer.progress_log_path}")
+    print(f"  Heartbeat:    {writer.heartbeat_path}")
 
     print("\n── Calibrating ID estimators ──")
     cal = calibrate_id_estimators()
@@ -301,14 +401,23 @@ def run_phase(
     if trainer == "ensemble":
         run_phase_ensemble(phase, device, pilot, results_dir,
                             fast_patience=fast_patience, val_every=val_every,
-                            use_amp=use_amp)
+                            use_amp=use_amp, epsilons_override=epsilons_override,
+                            writer=writer)
     else:
         run_phase_sequential(phase, device, pilot, results_dir,
                               trainer=trainer, fast_patience=fast_patience,
-                              val_every=val_every, use_amp=use_amp)
+                              val_every=val_every, use_amp=use_amp,
+                              epsilons_override=epsilons_override,
+                              writer=writer)
 
-    if phase == 1:
-        print("Run analysis (notebook 04) before proceeding to phase 2.")
+    # Final summary
+    summary = writer.summarise()
+    print(f"\n=== Phase {phase} summary ===")
+    print(f"  Runs saved:      {summary['n_runs_saved']}")
+    print(f"  Events logged:   {summary['n_events_logged']}")
+
+    if phase == 1 and epsilons_override is None:
+        print("Run analysis before proceeding to phase 2.")
 
 
 def main() -> None:
@@ -326,6 +435,8 @@ def main() -> None:
     parser.add_argument("--no-amp", action="store_true",
                         help="Disable bfloat16 autocast on GPU")
     parser.add_argument("--results-dir", type=Path, default=Path("results/runs"))
+    parser.add_argument("--epsilons", nargs="+", type=float, default=None,
+                        help="Override epsilon values (e.g. --epsilons 0.1 0.2 0.3 to skip eps=0)")
     args = parser.parse_args()
 
     run_phase(
@@ -333,6 +444,7 @@ def main() -> None:
         results_dir=args.results_dir,
         fast_patience=args.patience, val_every=args.val_every,
         use_amp=not args.no_amp,
+        epsilons_override=args.epsilons,
     )
 
 

@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from typing import Callable, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
 import numpy as np
 import torch
@@ -36,6 +36,9 @@ import torch.nn.functional as F
 from torch.func import functional_call, stack_module_state, vmap
 
 from src.metrics import estimate_flops_per_forward
+
+if TYPE_CHECKING:
+    from src.result_writer import ResultWriter
 
 
 def train_seeds_in_parallel(
@@ -58,6 +61,10 @@ def train_seeds_in_parallel(
     use_amp: bool = True,
     config_hash: str = "",
     dataset_hashes: Optional[list[str]] = None,
+    result_writer: "Optional[ResultWriter]" = None,
+    cell_key: Optional[str] = None,
+    heartbeat_every_s: float = 30.0,
+    save_partial_on_error: bool = True,
 ) -> list[dict]:
     """
     Train N_seeds copies of model_factory() simultaneously via vmap.
@@ -139,60 +146,113 @@ def train_seeds_in_parallel(
     cpu_gens = [torch.Generator().manual_seed(s) for s in seeds]
 
     start = time.perf_counter()
+    last_heartbeat = start
+    effective_cell_key = cell_key or (
+        f"ensemble_{model_type}_n{n_group}_N{n_train}_eps{epsilon:.2f}"
+    )
 
-    for epoch in range(max_epochs):
-        # Per-seed shuffle stacked into (n_seeds, N)
-        perm = torch.stack([torch.randperm(N, generator=g) for g in cpu_gens]).to(device)
+    interrupted = False
+    interrupt_reason: Optional[str] = None
+    try:
+        for epoch in range(max_epochs):
+            # Per-seed shuffle stacked into (n_seeds, N)
+            perm = torch.stack([torch.randperm(N, generator=g) for g in cpu_gens]).to(device)
 
-        epoch_loss = torch.zeros(n_seeds, device=device)
-        n_batches = 0
+            epoch_loss = torch.zeros(n_seeds, device=device)
+            n_batches = 0
 
-        for i in range(0, N, batch_size):
-            end = min(i + batch_size, N)
-            idx = perm[:, i:end]                                # (n_seeds, b)
-            # Gather per-seed batches
-            b = end - i
-            idx_exp_x = idx.unsqueeze(-1).expand(-1, -1, 2)     # (n_seeds, b, 2)
-            idx_exp_y = idx.unsqueeze(-1)                       # (n_seeds, b, 1)
-            x_b = torch.gather(x_train, 1, idx_exp_x)
-            y_b = torch.gather(y_train, 1, idx_exp_y)
+            for i in range(0, N, batch_size):
+                end = min(i + batch_size, N)
+                idx = perm[:, i:end]                                # (n_seeds, b)
+                # Gather per-seed batches
+                idx_exp_x = idx.unsqueeze(-1).expand(-1, -1, 2)     # (n_seeds, b, 2)
+                idx_exp_y = idx.unsqueeze(-1)                       # (n_seeds, b, 1)
+                x_b = torch.gather(x_train, 1, idx_exp_x)
+                y_b = torch.gather(y_train, 1, idx_exp_y)
 
-            optimizer.zero_grad(set_to_none=True)
-            with amp_ctx():
-                losses = vmapped_loss(params, buffers, x_b, y_b)  # (n_seeds,)
-                total_loss = losses.sum()
-            total_loss.backward()
-            optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+                with amp_ctx():
+                    losses = vmapped_loss(params, buffers, x_b, y_b)  # (n_seeds,)
+                    total_loss = losses.sum()
+                total_loss.backward()
+                optimizer.step()
 
-            epoch_loss += losses.detach()
-            n_batches += 1
+                epoch_loss += losses.detach()
+                n_batches += 1
 
-        # Log per-seed train loss (one sync per epoch)
-        epoch_loss_np = (epoch_loss / max(n_batches, 1)).cpu().numpy()
-        for s_idx in range(n_seeds):
-            train_loss_curves[s_idx].append((epoch, float(epoch_loss_np[s_idx])))
-
-        # ── Validation ───────────────────────────────────────────────────────
-        should_val = (epoch % val_every == 0) or (epoch == max_epochs - 1)
-        if should_val:
-            with torch.no_grad(), amp_ctx():
-                val_logits = vmapped_forward(params, buffers, x_val)  # (n_seeds, N_val, 1)
-                preds = (val_logits > 0).float()
-                val_accs = (preds == y_val).float().mean(dim=(1, 2))  # (n_seeds,)
-
-            best_val_accs = torch.maximum(best_val_accs, val_accs)
-            above = val_accs >= target_acc
-            consecutive_above = torch.where(above, consecutive_above + 1,
-                                             torch.zeros_like(consecutive_above))
-
-            val_accs_np = val_accs.cpu().numpy()
+            # Log per-seed train loss (one sync per epoch)
+            epoch_loss_np = (epoch_loss / max(n_batches, 1)).cpu().numpy()
             for s_idx in range(n_seeds):
-                val_acc_curves[s_idx].append((epoch, float(val_accs_np[s_idx])))
-                if val_accs_np[s_idx] >= target_acc and epochs_to_target[s_idx] is None:
-                    epochs_to_target[s_idx] = epoch
+                train_loss_curves[s_idx].append((epoch, float(epoch_loss_np[s_idx])))
 
-            if torch.all(consecutive_above >= patience):
-                break
+            # ── Validation ───────────────────────────────────────────────────────
+            should_val = (epoch % val_every == 0) or (epoch == max_epochs - 1)
+            if should_val:
+                with torch.no_grad(), amp_ctx():
+                    val_logits = vmapped_forward(params, buffers, x_val)  # (n_seeds, N_val, 1)
+                    preds = (val_logits > 0).float()
+                    val_accs = (preds == y_val).float().mean(dim=(1, 2))  # (n_seeds,)
+
+                best_val_accs = torch.maximum(best_val_accs, val_accs)
+                above = val_accs >= target_acc
+                consecutive_above = torch.where(above, consecutive_above + 1,
+                                                 torch.zeros_like(consecutive_above))
+
+                val_accs_np = val_accs.cpu().numpy()
+                for s_idx in range(n_seeds):
+                    val_acc_curves[s_idx].append((epoch, float(val_accs_np[s_idx])))
+                    if val_accs_np[s_idx] >= target_acc and epochs_to_target[s_idx] is None:
+                        epochs_to_target[s_idx] = epoch
+
+                if torch.all(consecutive_above >= patience):
+                    break
+
+            # Heartbeat (lightweight liveness signal for external monitor)
+            if result_writer is not None:
+                now = time.perf_counter()
+                if (now - last_heartbeat) >= heartbeat_every_s:
+                    result_writer.heartbeat({
+                        "cell": effective_cell_key,
+                        "epoch": epoch,
+                        "max_epochs": max_epochs,
+                        "best_val_accs_so_far": best_val_accs.cpu().tolist(),
+                        "trainer": "ensemble",
+                        "n_seeds": n_seeds,
+                    })
+                    last_heartbeat = now
+    except KeyboardInterrupt as exc:
+        # Always log the interrupt for traceability, then propagate so the
+        # user can actually stop the run. Partial JSONs already written by
+        # the runner during prior completed cells are unaffected.
+        interrupted = True
+        interrupt_reason = f"KeyboardInterrupt: {exc}"
+        if result_writer is not None:
+            try:
+                result_writer.log_event(
+                    "cell_interrupted", cell=effective_cell_key,
+                    epoch=len(train_loss_curves[0]) - 1 if train_loss_curves[0] else 0,
+                    reason=interrupt_reason,
+                )
+            except Exception:
+                pass
+        raise  # propagate Ctrl-C upward
+    except RuntimeError as exc:
+        # Recoverable in-cell crash (CUDA OOM, NaN, etc.). With
+        # save_partial_on_error=True, swallow and return partial results so
+        # the runner can move on to the next cell; otherwise propagate.
+        interrupted = True
+        interrupt_reason = f"{type(exc).__name__}: {exc}"
+        if result_writer is not None and save_partial_on_error:
+            try:
+                result_writer.log_event(
+                    "cell_interrupted", cell=effective_cell_key,
+                    epoch=len(train_loss_curves[0]) - 1 if train_loss_curves[0] else 0,
+                    reason=interrupt_reason,
+                )
+            except Exception:
+                pass
+        if not save_partial_on_error:
+            raise
 
     wall = time.perf_counter() - start
     total_epochs = len(train_loss_curves[0])
@@ -204,7 +264,9 @@ def train_seeds_in_parallel(
         last_loss = train_loss_curves[s_idx][-1][1] if train_loss_curves[s_idx] else float("nan")
         anomaly_flag = False
         anomaly_reason: Optional[str] = None
-        if np.isnan(last_loss) or np.isinf(last_loss):
+        if interrupted:
+            anomaly_flag, anomaly_reason = True, f"interrupted: {interrupt_reason}"
+        elif np.isnan(last_loss) or np.isinf(last_loss):
             anomaly_flag, anomaly_reason = True, "loss_nan"
         elif best_val_accs_np[s_idx] < 0.52 and total_epochs == max_epochs:
             anomaly_flag, anomaly_reason = True, "stuck_at_chance"

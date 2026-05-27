@@ -102,13 +102,23 @@ def bootstrap_slope_ci(
         idx = rng.integers(0, n, size=n)
         bs_slopes[i] = _ols_slope(x[idx], y[idx])
 
+    # Filter degenerate bootstrap samples (zero x-variance resamples → NaN slope)
+    valid = bs_slopes[np.isfinite(bs_slopes)]
+    if len(valid) == 0:
+        return {
+            "slope": observed_slope, "ci_lower": float("nan"),
+            "ci_upper": float("nan"), "ci_level": ci_level,
+            "p_value": float("nan"), "reject_null_slope_zero": False,
+            "n_bootstrap": n_bootstrap, "n_valid_bootstrap": 0,
+        }
+
     alpha = 1 - ci_level
-    ci_lower = float(np.percentile(bs_slopes, 100 * alpha / 2))
-    ci_upper = float(np.percentile(bs_slopes, 100 * (1 - alpha / 2)))
+    ci_lower = float(np.percentile(valid, 100 * alpha / 2))
+    ci_upper = float(np.percentile(valid, 100 * (1 - alpha / 2)))
 
     p_value = float(2 * min(
-        (bs_slopes >= 0).mean(),
-        (bs_slopes <= 0).mean(),
+        (valid >= 0).mean(),
+        (valid <= 0).mean(),
     ))
 
     return {

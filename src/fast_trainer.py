@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import numpy as np
 import torch
@@ -29,6 +29,9 @@ import torch.nn.functional as F
 from torch.utils.data import TensorDataset
 
 from src.metrics import estimate_flops_per_forward
+
+if TYPE_CHECKING:
+    from src.result_writer import ResultWriter
 
 
 def train_one_run_fast(
@@ -52,6 +55,9 @@ def train_one_run_fast(
     compute_id_metrics: bool = False,
     config_hash: str = "",
     dataset_hash: str = "",
+    result_writer: "Optional[ResultWriter]" = None,
+    cell_key: Optional[str] = None,
+    heartbeat_every_s: float = 30.0,
 ) -> dict:
     """Train one model with the same I/O shape as train_one_run."""
     _set_determinism(seed)
@@ -85,6 +91,8 @@ def train_one_run_fast(
     fwd = model.augmented_forward if is_augmented else model  # callable
 
     start = time.perf_counter()
+    last_heartbeat = start
+    effective_cell_key = cell_key or f"{model_type}_n{n_group}_N{n_train}_eps{epsilon:.2f}_s{seed}"
 
     for epoch in range(max_epochs):
         perm = torch.randperm(N, generator=gen, device=device)
@@ -130,6 +138,19 @@ def train_one_run_fast(
 
             if consecutive_above >= patience:
                 break
+
+        # Heartbeat so an external monitor can see liveness
+        if result_writer is not None:
+            now = time.perf_counter()
+            if (now - last_heartbeat) >= heartbeat_every_s:
+                result_writer.heartbeat({
+                    "cell": effective_cell_key,
+                    "epoch": epoch,
+                    "max_epochs": max_epochs,
+                    "best_val_acc_so_far": best_val_acc,
+                    "trainer": "fast",
+                })
+                last_heartbeat = now
 
     wall = time.perf_counter() - start
     total_epochs = len(train_loss_curve)
