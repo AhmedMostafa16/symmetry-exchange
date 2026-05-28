@@ -8,3 +8,8 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Coverage / test artifacts
+.coverage
+.coverage.*
+htmlcov/
