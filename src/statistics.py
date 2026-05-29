@@ -1,7 +1,8 @@
 """
 Statistical design for the symmetry exchange rate experiment.
 
-All methods are pre-registered before running experiments.
+These methods implement the pre-specified analysis plan. (The study is
+exploratory, not externally pre-registered; see docs/METHODOLOGY.md.)
 The bootstrap slope CI is the primary inferential tool; parametric tests
 are secondary cross-checks only.
 """
@@ -28,7 +29,7 @@ def power_analysis_slope(
     """
     Analytical power analysis for OLS slope on log₂(N_target) ~ log₂(|G|).
 
-    Pre-registered: requires power ≥ 0.80 before the experiment runs.
+    Pre-specified target: power ≥ 0.80.
     If insufficient, the recommendation field specifies the minimum n_seeds needed.
 
     x-grid is fixed to log₂({1,2,3,4,6,8,12}).
@@ -80,7 +81,7 @@ def bootstrap_slope_ci(
     Non-parametric bootstrap 95% CI on the OLS slope of log(N_target) ~ log(|G|).
 
     Resamples (x_i, y_i) pairs with replacement.
-    This is the primary inferential estimator in the pre-registered analysis.
+    This is the primary inferential estimator in the pre-specified analysis.
 
     p-value: two-sided proportion of bootstrap slopes on the wrong side of 0.
     """
@@ -137,7 +138,7 @@ def bootstrap_slope_ci(
 
 def bonferroni_correction(p_values: dict[str, float], alpha: float = 0.05) -> dict:
     """
-    Bonferroni correction for the three pre-registered comparisons:
+    Bonferroni correction for the three pre-specified comparisons:
       H1: slope(equivariant) < 0
       H2: slope(equivariant) < slope(wrong_group)
       H3: slope(equivariant) < slope(augmented) [informative, not primary]
@@ -154,13 +155,15 @@ def bonferroni_correction(p_values: dict[str, float], alpha: float = 0.05) -> di
     }
 
 
-# ─── Pre-registration guard ───────────────────────────────────────────────────
+# ─── Config-hash guard (reproducibility / tamper-evidence) ────────────────────
 
 
 def compute_analysis_hash(config: dict) -> str:
     """
-    SHA-256 of the pre-registered config (sorted keys, JSON-serialised).
-    Compare at analysis time to the hash logged at experiment start.
-    A mismatch signals unregistered deviation — flag in the paper.
+    SHA-256 of the config (sorted keys, JSON-serialised) for reproducibility
+    and tamper-evidence — it confirms the released config matches the data, but
+    is NOT a pre-registration (the config was never externally timestamped before
+    data collection). Compare at analysis time to the hash logged at run start.
+    A mismatch signals a config change — flag it.
     """
     return hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()

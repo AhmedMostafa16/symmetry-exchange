@@ -3,8 +3,13 @@
 Measures whether a C_n equivariant model trades **one bit of correct group structure for
 one bit of data** when learning a C_n petal classification task.
 
-Pre-registered: see [`preregistration/preregistration.md`](preregistration/preregistration.md)
-and the config hash in [`preregistration/config_hash.txt`](preregistration/config_hash.txt).
+**Status: exploratory, not pre-registered.** The design was pre-specified in a design document
+([`preregistration/preregistration.md`](preregistration/preregistration.md)) and the config is
+SHA-256 hashed ([`preregistration/config_hash.txt`](preregistration/config_hash.txt)) for
+reproducibility and tamper-evidence — but it was never deposited in an external timestamped
+registry before data collection, and the primary estimator (β_diff) was adopted post-hoc after
+Phase 1. Treat all results as exploratory; a confirmatory externally-pre-registered replication
+is future work.
 
 ## Setup
 
@@ -69,7 +74,7 @@ src/
 └── resource_tracker.py  RunResult schema, JSON persistence
 
 tests/                   116 tests, 86% coverage
-preregistration/         Pre-registration doc + config hash
+preregistration/         Design document + config hash (not version-controlled; not an external pre-registration)
 results/runs/            One JSON per training run (never delete)
 scripts/benchmark.py     Trainer comparison
 experiment_runner.py     Main sweep entry point
@@ -82,4 +87,4 @@ experiment_runner.py     Main sweep entry point
 - bfloat16 autocast is deterministic within a single GPU type but may differ across GPU
   generations. Disable with `--no-amp` for strict cross-hardware determinism.
 - Model initialisation is seeded *before* `get_model_suite()` in the runner; this was a
-  fix relative to the first Phase 1 run and is more faithful to the pre-registration.
+  fix relative to the first Phase 1 run and is more faithful to the pre-specified design.

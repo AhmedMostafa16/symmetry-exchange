@@ -2,7 +2,7 @@
 Post-experiment analysis pipeline.
 
 Loads run JSONs, computes N_target tables, estimates absolute and *relative*
-exchange rates, runs pre-registered statistical tests, and classifies outcomes.
+exchange rates, runs the pre-specified statistical tests, and classifies outcomes.
 
 **Why relative slopes are primary.** The absolute slope of
 log₂(N_target) ~ log₂(|G|) for any single model is contaminated by
@@ -175,7 +175,7 @@ def full_statistical_analysis(
     n_bootstrap: int = 10_000,
 ) -> dict:
     """
-    Run all pre-registered statistical tests. Returns a structured report.
+    Run all pre-specified statistical tests. Returns a structured report.
 
     Primary inference uses `relative_slopes` (β_diff vs baseline) and
     `pairwise` (β_diff of one treatment vs another, jointly bootstrapped
@@ -269,7 +269,7 @@ def full_statistical_analysis(
         )
         report["comparisons"]["equiv_vs_augmented"] = cmp_eq_au
 
-    # Bonferroni: three pre-registered tests
+    # Bonferroni: three pre-specified tests
     p_vals = {
         "H1_eq_beats_vanilla": eq_rel.get("p_value", 1.0),
         "H2_correct_beats_wrong": (

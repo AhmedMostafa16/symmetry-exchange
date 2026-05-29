@@ -13,3 +13,7 @@ wheels/
 .coverage
 .coverage.*
 htmlcov/
+
+# Training run data (can be large; regenerate with experiment_runner.py)
+results/runs/
+results/checkpoints/

@@ -1,9 +1,11 @@
 """
 Main experiment runner for the symmetry exchange rate experiment.
 
-Pre-register PREREGISTERED_CONFIG by committing this file (or its hash) to git
-BEFORE running any training. Deviations from the pre-registered config must
-be reported as exploratory analyses, not confirmatory tests.
+PREREGISTERED_CONFIG holds the pre-specified experimental configuration; its
+SHA-256 hash provides reproducibility / tamper-evidence (it confirms the released
+config matches the data) but NOT pre-registration: the config was never deposited
+in an external, timestamped registry before data collection. This study is
+exploratory. (The PREREGISTERED_* names are retained for code continuity.)
 
 Trainers (--trainer):
     original  : src/trainer.train_one_run (reference; slowest)
