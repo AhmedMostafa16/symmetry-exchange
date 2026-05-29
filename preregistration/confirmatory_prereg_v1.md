@@ -9,7 +9,7 @@
 | Field                              | Value                                                                                                                        |
 | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | **Title**                          | Confirmatory measurement of the architectural symmetry / training-data exchange rate via the relative-slope estimator β_diff |
-| **Depositor**                      | Ahmed Mostafa (AhmedMostafa16)                                                                                               |
+| **Depositor**                      | Ahmed M. Adly                                                                                               |
 | **Deposit date**                   | 2026-05-29                                                                                                                   |
 | **Deposit platform**               | GitHub — public GPG-signed annotated git tag                                                                                 |
 | **Deposit URL / tag**              | https://github.com/AhmedMostafa16/symmetry-exchange/releases/tag/confirmatory-prereg-v1                                     |
@@ -369,7 +369,7 @@ The analysis (`src/analysis.py::full_statistical_analysis`) works unchanged beca
 ## 13. Signature block
 
 ```
-Researcher: Ahmed Mostafa (AhmedMostafa16)
+Researcher: Ahmed M. Adly
 Date deposited: 2026-05-29
 Platform: GitHub — public GPG-signed annotated git tag
 Deposit URL / git tag: https://github.com/AhmedMostafa16/symmetry-exchange/releases/tag/confirmatory-prereg-v1
