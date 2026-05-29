@@ -9,10 +9,10 @@
 | Field                              | Value                                                                                                                        |
 | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | **Title**                          | Confirmatory measurement of the architectural symmetry / training-data exchange rate via the relative-slope estimator β_diff |
-| **Depositor**                      | [your identifier]                                                                                                            |
-| **Deposit date**                   | [fill on deposit — YYYY-MM-DD]                                                                                               |
-| **Deposit platform**               | [OSF / arXiv / public git tag]                                                                                               |
-| **Deposit URL / tag**              | [fill after deposit]                                                                                                         |
+| **Depositor**                      | Ahmed Mostafa (AhmedMostafa16)                                                                                               |
+| **Deposit date**                   | 2026-05-29                                                                                                                   |
+| **Deposit platform**               | GitHub — public GPG-signed annotated git tag                                                                                 |
+| **Deposit URL / tag**              | https://github.com/AhmedMostafa16/symmetry-exchange/releases/tag/confirmatory-prereg-v1                                     |
 | **Config hash (confirmatory)**     | `5bcdf06f89f70de4d56b5d4be0514211f9ecb42ab2dc5cc9bff171cfe43acc88`                                                           |
 | **Motivating study (exploratory)** | Git commit range `4104785`–`0a990ae`, config hash `1bd8889315ec0f15640eb35854279e87dbcec1f57f7ea0cbb4a9fdd8a9f4a00e`         |
 
@@ -369,11 +369,11 @@ The analysis (`src/analysis.py::full_statistical_analysis`) works unchanged beca
 ## 13. Signature block
 
 ```
-Researcher: Ahmed M. Adly
+Researcher: Ahmed Mostafa (AhmedMostafa16)
 Date deposited: 2026-05-29
-Platform: public git tag (https://github.com/AhmedMostafa16/symmetry-exchange)
-Deposit URL / git tag:  https://github.com/AhmedMostafa16/symmetry-exchange/tree/confirmatory-prereg-v1
-Config hash (confirmatory):
-Exploratory study hash (reference):
-Software commit at deposit: _______________  (git rev-parse HEAD)
+Platform: GitHub — public GPG-signed annotated git tag
+Deposit URL / git tag: https://github.com/AhmedMostafa16/symmetry-exchange/releases/tag/confirmatory-prereg-v1
+Config hash (confirmatory): 5bcdf06f89f70de4d56b5d4be0514211f9ecb42ab2dc5cc9bff171cfe43acc88
+Exploratory study hash (reference): 1bd8889315ec0f15640eb35854279e87dbcec1f57f7ea0cbb4a9fdd8a9f4a00e
+Software commit at deposit: 5b71d1e384a3d2de4302034f4be4fc57bfbeb266
 ```
